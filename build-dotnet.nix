@@ -1,4 +1,4 @@
-{ dotnet-sdk, stdenv, makeWrapper }:
+{ dotnet-sdk, dotnetSdkPackage ? dotnet-sdk, stdenv, makeWrapper, callPackage }:
 { baseName
   , version
   , src
@@ -6,25 +6,17 @@
   , mono ? ""
   , project ? ""
   , configuration ? "Release"
-  , nugetsFile ? ./nugets.json }:
-let fetchurl = import <nix/fetchurl.nix>;
-    fetchNuPkg = 
-      { url , fileName , sha512, ... }:
-      fetchurl {
-          inherit sha512 url;
-          name = "${fileName}.nupkg";
-    };
-    nugetInfos = builtins.fromJSON (builtins.readFile nugetsFile );
-    nugets = map (n: fetchNuPkg n) nugetInfos;
+}:
+let fetchDotnet = callPackage ./fetchDotnet.nix { inherit dotnetSdkPackage; };
 in
 stdenv.mkDerivation rec {
   name = "${baseName}-${version}";
-  nativeBuildInputs =  [ dotnet-sdk makeWrapper ];
+  nativeBuildInputs =  [ dotnetSdkPackage makeWrapper ];
+  nugetPackages = fetchDotnet { inherit src name; };
   inherit src mono;
-  nugetsWithFileName = map (n: "${n}:${n.name}") nugets;
   buildPhase = ''
     runHook preBuild
-    
+
     if [ "$mono" != "" ]; then
     export FrameworkPathOverride=${mono}/lib/mono/4.5/
     fi
@@ -33,14 +25,12 @@ stdenv.mkDerivation rec {
     export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=true
     # avoid permission denied error
     export HOME=$PWD
+    touch $HOME/.dotnet/$(dotnet --version).dotnetFirstUseSentinel
 
-    mkdir -p packages
-    for n in $nugetsWithFileName; do
-        ln -s `echo $n|cut -f1 -d:` packages/`echo $n | cut -f2 -d:`
-    done
 
     echo "Running dotnet restore"
-    dotnet restore --source $PWD/packages ${project}
+    export NUGET_PACKAGES=$nugetPackages
+    dotnet restore --locked-mode ${project}
     echo "Running dotnet build"
     dotnet build --no-restore --configuration ${configuration} ${project}
 
@@ -56,7 +46,7 @@ stdenv.mkDerivation rec {
 
     echo Creating wrapper
     mkdir $out/bin
-    makeWrapper ${dotnet-sdk}/bin/dotnet $out/bin/${baseName} --add-flags $out/${baseName}.dll ${additionalWrapperArgs}
+    makeWrapper ${dotnetSdkPackage}/bin/dotnet $out/bin/${baseName} --add-flags $out/${baseName}.dll ${additionalWrapperArgs}
     chmod +x $out/bin/${baseName}
     runHook postInstall
   '';
